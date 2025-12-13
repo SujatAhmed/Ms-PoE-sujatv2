@@ -9,8 +9,3 @@ This repository implements and evaluates Multi-scale Positional Encoding (Ms-PoE
 5. **Experiment orchestration** (`src/baseline.sh` & `src/ms_poe.sh`): Shell scripts that coordinate multiple inference runs across answer positions for both baseline and Ms-PoE models, followed by evaluation.
 
 Together, these components enable reproducible comparison between standard positional encodings and the proposed Ms-PoE approach on long-context QA tasks.
-
-## Where to start
-- For baseline runs, execute `src/baseline.sh`; it iterates over several `--answer_idx` values, calls `inference.py` to generate answers, and then scores each file with `eval_qa_response.py`.
-- For Ms-PoE runs, execute `src/ms_poe.sh`; it follows the same pattern while enabling the multi-scale positional encoding flags and layer selections.
-- Both scripts ultimately enter the `if __name__ == "__main__":` block in `inference.py`, which parses arguments, loads the model, constructs prompts, runs generation, and writes JSONL outputs for downstream scoring.
