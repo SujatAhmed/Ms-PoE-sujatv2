@@ -74,7 +74,7 @@ def sample_rotary_emb(cos, sin, num_key_value_groups):
 
 ### Positional Scaling
 class MsPoELlamaRotaryEmbedding(nn.Module):
-    def __init__(self, dim, min_cratio=1, max_cratio=3, num_heads=32, max_position_embeddings=2048, base=10000, device=None):
+    def __init__(self, dim, min_cratio=1, max_cratio=3, num_heads=32, max_position_embeddings=2048, base=10000, device=None, scaling_prob: float = 1.0):
         super().__init__()
 
         self.dim = dim
@@ -86,6 +86,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         self.min_ratio = min_cratio
         self.max_ratio = max_cratio
         self.num_heads = num_heads
+        self.scaling_prob = max(0.0, min(scaling_prob, 1.0))
 
         # Build here to make `torch.jit.trace` work.
         self._set_cos_sin_cache(
@@ -102,7 +103,11 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         compress_ratio = min_ratio + (max_ratio - min_ratio) * (compress_ratio / num_heads)
         compress_ratio = compress_ratio.unsqueeze(-1)
 
-        t = t / compress_ratio
+        if self.scaling_prob < 1.0:
+            apply_scaling = torch.rand(t.shape, device=device) < self.scaling_prob
+            t = torch.where(apply_scaling, t / compress_ratio, t)
+        else:
+            t = t / compress_ratio
         freqs = torch.einsum("ki,j->kij", t, self.inv_freq)
         # Different from paper, but it uses a different permutation in order to obtain the same calculation
         emb = torch.cat((freqs, freqs), dim=-1)
@@ -145,6 +150,7 @@ class MsPoELlamaAttention(nn.Module):
 
         self.compress_ratio_min = config.compress_ratio_min
         self.compress_ratio_max = config.compress_ratio_max
+        self.scaling_prob = getattr(config, "scaling_prob", 1.0)
 
         self.enable_head_metrics = True
         self.head_type = config.head_type
@@ -208,6 +214,7 @@ class MsPoELlamaAttention(nn.Module):
                 max_cratio=self.compress_ratio_max,
                 num_heads=self.num_heads,
                 max_position_embeddings=self.max_position_embeddings,
+                scaling_prob=self.scaling_prob,
                 base=self.rope_theta,
             )
         else:
