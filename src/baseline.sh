@@ -1,3 +1,4 @@
+
 CUDA_VISIBLE_DEVICES=0 python -u inference.py \
     --input_path data/mdqa_10documents.jsonl.gz \
     --output_path mdqa_results/baseline-vicuna_7b-10doc-answer1.jsonl \
