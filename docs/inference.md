@@ -25,3 +25,4 @@ The module executes the following steps when run as a script:
 5. **Prompt sampling**: Trims prompts and examples to `--sample_num` if requested and preserves associated documents.
 6. **Generation**: Iterates over prompts in batches via `chunks`, tokenizes with optional padding, runs `model.generate`, and resets Ms-PoE layers between batches when enabled.
 7. **Post-processing and output**: Decodes each generated sequence, removes the prompt prefix to isolate the model answer, attaches metadata (prompt, documents, model info), and writes one JSON record per example to `--output_path`.
+
