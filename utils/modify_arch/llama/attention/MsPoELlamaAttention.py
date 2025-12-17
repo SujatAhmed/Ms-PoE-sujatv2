@@ -1,18 +1,7 @@
 from typing import Optional, Tuple
 
-import os
-import sys
-import pdb
-import math
-import copy
-import time
-import types
-import numpy as np
-from scipy.stats import entropy
-
 import torch
 from torch import nn
-import torch.utils.checkpoint
 import torch.nn.functional as F
 
 from transformers.models.llama.configuration_llama import LlamaConfig
@@ -26,8 +15,7 @@ from transformers.models.llama.modeling_llama import (
     LlamaForCausalLM,
 )
 
-
-__all__ = ["MsPoELlamaForCausalLM"]
+from ..rotary_embeddings.MsPoELlamaRotaryEmbedding import MsPoELlamaRotaryEmbedding
 
 
 def _make_causal_mask(
@@ -60,16 +48,6 @@ def _make_causal_mask(
     )
 
 
-def apply_rotary_pos_emb_single(x, cos, sin, position_ids):
-    # The first two dimensions of cos and sin are always 1, so we can `squeeze` them.
-    cos = cos.squeeze(1).squeeze(0)  # [seq_len, dim]
-    sin = sin.squeeze(1).squeeze(0)  # [seq_len, dim]
-    cos = cos[position_ids].unsqueeze(1)  # [bs, 1, seq_len, dim]
-    sin = sin[position_ids].unsqueeze(1)  # [bs, 1, seq_len, dim]
-    x_embed = (x * cos) + (rotate_half(x) * sin)
-    return x_embed
-
-
 def apply_rotary_pos_emb_single_scaling(x, cos, sin, position_ids):
     cos = cos[:, position_ids]
     sin = sin[:, position_ids]
@@ -85,82 +63,6 @@ def sample_rotary_emb(cos, sin, num_key_value_groups):
     cos = cos[::num_key_value_groups, ...]
     sin = sin[::num_key_value_groups, ...]
     return cos, sin
-
-
-### Positional Scaling
-class MsPoELlamaRotaryEmbedding(nn.Module):
-    def __init__(
-        self,
-        dim,
-        min_compression_ratio=1,
-        max_compression_ratio=3,
-        num_heads=32,
-        max_position_embeddings=2048,
-        base=10000,
-        device=None,
-        scaling_prob: float = 1.0,
-    ):
-        super().__init__()
-        
-        # position embedding dimension
-        self.dim = dim
-        # required to decide the size of cache
-        self.max_position_embeddings = max_position_embeddings
-        
-        self.base = base
-        inv_freq = 1.0 / (
-            self.base ** (torch.arange(0, self.dim, 2).float().to(device) / self.dim)
-        )
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
-
-        self.min_ratio = min_compression_ratio
-        self.max_ratio = max_compression_ratio
-        self.num_heads = num_heads
-        self.scaling_prob = max(0.0, min(scaling_prob, 1.0))
-
-        # Build here to make `torch.jit.trace` work.
-        self._set_cos_sin_cache(
-            seq_len=max_position_embeddings,
-            device=self.inv_freq.device,
-            dtype=torch.get_default_dtype(),
-        )
-
-    def _set_cos_sin_cache(self, seq_len, device, dtype):
-        min_ratio = self.min_ratio
-        max_ratio = self.max_ratio
-        num_heads = self.num_heads
-        self.max_seq_len_cached = seq_len
-        t = torch.arange(
-            self.max_seq_len_cached, device=device, dtype=self.inv_freq.dtype
-        ).repeat(num_heads, 1)
-        compress_ratio = torch.arange(
-            num_heads, device=device, dtype=self.inv_freq.dtype
-        )
-        compress_ratio = min_ratio + (max_ratio - min_ratio) * (
-            compress_ratio / num_heads
-        )
-        compress_ratio = compress_ratio.unsqueeze(-1)
-
-        if self.scaling_prob < 1.0:
-            apply_scaling = torch.rand(t.shape, device=device) < self.scaling_prob
-            t = torch.where(apply_scaling, t / compress_ratio, t)
-        else:
-            t = t / compress_ratio
-        freqs = torch.einsum("ki,j->kij", t, self.inv_freq)
-        # Different from paper, but it uses a different permutation in order to obtain the same calculation
-        emb = torch.cat((freqs, freqs), dim=-1)
-        self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
-        self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
-
-    def forward(self, x, seq_len=None):
-        # x: [bs, num_attention_heads, seq_len, head_size]
-        if seq_len > self.max_seq_len_cached:
-            self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
-
-        return (
-            self.cos_cached[:, :seq_len].to(dtype=x.dtype),
-            self.sin_cached[:, :seq_len].to(dtype=x.dtype),
-        )
 
 
 class MsPoELlamaAttention(nn.Module):
@@ -197,7 +99,6 @@ class MsPoELlamaAttention(nn.Module):
 
         self.compress_ratio_min = config.compress_ratio_min
         self.compress_ratio_max = config.compress_ratio_max
-        self.scaling_prob = getattr(config, "scaling_prob", 1.0)
 
         self.enable_head_metrics = True
         self.head_type = config.head_type
@@ -205,104 +106,10 @@ class MsPoELlamaAttention(nn.Module):
 
         self._init_rope()
 
-    def _head_wise_statistics(
-        self, query_states, key_states, q_len, kv_seq_len, bsz, attention_mask
-    ):
-
-        query_states_new = query_states
-        key_states_new = repeat_kv(key_states, self.num_key_value_groups)
-
-        attn_weights = torch.matmul(
-            query_states_new, key_states_new.transpose(2, 3)
-        ) / math.sqrt(self.head_dim)
-
-        if attn_weights.size() != (bsz, self.num_heads, q_len, kv_seq_len):
-            raise ValueError(
-                f"Attention weights should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is"
-                f" {attn_weights.size()}"
-            )
-
-        if attention_mask is not None:
-            if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
-                raise ValueError(
-                    f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
-                )
-            attn_weights = attn_weights + attention_mask
-
-        # upcast attention to fp32
-        attn_weights = nn.functional.softmax(
-            attn_weights, dim=-1, dtype=torch.float32
-        ).to(query_states.dtype)
-
-        if len(attn_weights.shape) == 4:
-            attn_weights = attn_weights.squeeze(0)
-
-        head_orders = self._calculate_outlier(attn_weights)
-
-        return head_orders
-
-    def _calculate_outlier(self, attn_weights):
-        # attn_weights: [num_heads, q_len, kv_seq_len]
-        average = attn_weights.mean(-1).unsqueeze(-1)
-        outlier = -(attn_weights > 3 * average).float().mean(-1)[:, -1]
-        head_orders = outlier.argsort()
-
-        if self.head_type == "normal":
-            head_orders = np.arange(self.num_heads)
-            head_orders = self.num_heads - head_orders - 1
-
-        return head_orders
-
-    def _init_rope(self):
-        """
-        Select the RoPE embedding process based on config
-        """
-        if self.config.rope_scaling is None:
-            self.rotary_emb = MsPoELlamaRotaryEmbedding(
-                self.head_dim,
-                min_compression_ratio=self.compress_ratio_min,
-                max_compression_ratio=self.compress_ratio_max,
-                num_heads=self.num_heads,
-                max_position_embeddings=self.max_position_embeddings,
-                scaling_prob=self.scaling_prob,
-                base=self.rope_theta,
-            )
-        else:
-            scaling_type = self.config.rope_scaling["type"]
-            scaling_factor = self.config.rope_scaling["factor"]
-            if scaling_type == "linear":
-                assert False  # not implemented
-                self.rotary_emb = LlamaLinearScalingRotaryEmbedding(
-                    self.head_dim,
-                    min_compression_ratio=self.compress_ratio_min,
-                    max_compression_ratio=self.compress_ratio_max,
-                    num_heads=self.num_heads,
-                    max_position_embeddings=self.max_position_embeddings,
-                    scaling_factor=scaling_factor,
-                    base=self.rope_theta,
-                )
-            elif scaling_type == "dynamic":
-                assert False  # not implemented
-                self.rotary_emb = LlamaDynamicNTKScalingRotaryEmbedding(
-                    self.head_dim,
-                    max_position_embeddings=self.max_position_embeddings,
-                    scaling_factor=scaling_factor,
-                    base=self.rope_theta,
-                )
-            else:
-                raise ValueError(f"Unknown RoPE scaling type {scaling_type}")
-
-    def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
-        return (
-            tensor.view(bsz, seq_len, self.num_heads, self.head_dim)
-            .transpose(1, 2)
-            .contiguous()
-        )
-
     def forward(
         self,
-        hidden_states: torch.Tensor,  # input embeddings [batch_size, seq_len, embedding_size/hidden_size]
-        attention_mask: Optional[torch.Tensor] = None,  # [batch_size, 1, q_len, kv_len]
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: bool = False,
@@ -310,9 +117,8 @@ class MsPoELlamaAttention(nn.Module):
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
 
         bsz, q_len, _ = hidden_states.size()
-
-        # [batch_size, n_(Q/KV)heads, seq_length, head_dim]
-        query_states, key_states, value_states = self._compute_QKV(hidden_states)
+        
+        query_states, key_states, value_states = self._compute_QKV(hidden_states);
 
         # remake causal mask
         attention_mask = _make_causal_mask(
@@ -325,17 +131,14 @@ class MsPoELlamaAttention(nn.Module):
             device=query_states.device,
         )
 
-        kv_seq_len = (
-            key_states.shape[-2] + past_key_value[0].shape[-2]
-            if past_key_value is not None
-            else 0
-        )
+        kv_seq_len = key_states.shape[-2]
+        if past_key_value is not None:
+            kv_seq_len += past_key_value[0].shape[-2]
 
         position_length = kv_seq_len
         if not position_ids.nelement() > 1:
             if position_length < position_ids.item() + 1:
                 position_length = position_ids.item() + 1
-
         cos, sin = self.rotary_emb(value_states, seq_len=position_length)
 
         if self.enable_head_metrics:
@@ -422,7 +225,19 @@ class MsPoELlamaAttention(nn.Module):
         return attn_output, attn_weights, past_key_value
 
     def _compute_QKV(self, hidden_states):
-        bsz, q_len, _ = hidden_states.size()
+        """_summary_
+
+        Args:
+            hidden_states (_type_): _description_
+
+        Returns:
+            Tuple[
+                Tensor[batch_size, n_query_heads, sequence_length, head_dimension], 
+                Tensor[batch_size, n_kv_heads, sequence_length, head_dimension],
+                Tensor[batch_size, n_kv_heads, sequence_length, head_dimension]
+            ]: Query, key, and value vectors
+        """
+        batch_size, sequence_length, _ = hidden_states.size()
 
         if self.config.pretraining_tp > 1:
             key_value_slicing = (
@@ -458,27 +273,103 @@ class MsPoELlamaAttention(nn.Module):
             value_states = self.v_proj(hidden_states)
 
         query_states = query_states.view(
-            bsz, q_len, self.num_heads, self.head_dim
+            batch_size, sequence_length, self.num_heads, self.head_dim
         ).transpose(1, 2)
         key_states = key_states.view(
-            bsz, q_len, self.num_key_value_heads, self.head_dim
+            batch_size, sequence_length, self.num_key_value_heads, self.head_dim
         ).transpose(1, 2)
         value_states = value_states.view(
-            bsz, q_len, self.num_key_value_heads, self.head_dim
+            batch_size, sequence_length, self.num_key_value_heads, self.head_dim
         ).transpose(1, 2)
 
-        return query_states, key_states, value_states
+        return (query_states, key_states, value_states)
 
+    def _head_wise_statistics(
+        self, query_states, key_states, q_len, kv_seq_len, bsz, attention_mask
+    ):
 
-class MsPoELlamaForCausalLM(LlamaForCausalLM):
-    def __init__(self, config):
-        super().__init__(config)
-        num_layers = len(self.model.layers)
-        for layer_idx in range(num_layers):
-            if layer_idx in config.apply_layers:
-                self.model.layers[layer_idx].self_attn = MsPoELlamaAttention(config)
+        query_states_new = query_states
+        key_states_new = repeat_kv(key_states, self.num_key_value_groups)
 
-    def _reset(self):
-        for layer_idx in self.config.apply_layers:
-            self.model.layers[layer_idx].self_attn.enable_head_metrics = True
-            self.model.layers[layer_idx].self_attn.head_order = None
+        attn_weights = torch.matmul(
+            query_states_new, key_states_new.transpose(2, 3)
+        ) / math.sqrt(self.head_dim)
+
+        if attn_weights.size() != (bsz, self.num_heads, q_len, kv_seq_len):
+            raise ValueError(
+                f"Attention weights should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is"
+                f" {attn_weights.size()}"
+            )
+
+        if attention_mask is not None:
+            if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
+                raise ValueError(
+                    f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
+                )
+            attn_weights = attn_weights + attention_mask
+
+        # upcast attention to fp32
+        attn_weights = nn.functional.softmax(
+            attn_weights, dim=-1, dtype=torch.float32
+        ).to(query_states.dtype)
+
+        if len(attn_weights.shape) == 4:
+            attn_weights = attn_weights.squeeze(0)
+
+        head_orders = self._calculate_outlier(attn_weights)
+
+        return head_orders
+
+    def _calculate_outlier(self, attn_weights):
+        # attn_weights: [num_heads, q_len, kv_seq_len]
+        average = attn_weights.mean(-1).unsqueeze(-1)
+        outlier = -(attn_weights > 3 * average).float().mean(-1)[:, -1]
+        head_orders = outlier.argsort()
+
+        if self.head_type == "normal":
+            head_orders = np.arange(self.num_heads)
+            head_orders = self.num_heads - head_orders - 1
+
+        return head_orders
+
+    def _init_rope(self):
+        if self.config.rope_scaling is None:
+            self.rotary_emb = MsPoELlamaRotaryEmbedding(
+                self.head_dim,
+                min_cratio=self.compress_ratio_min,
+                max_cratio=self.compress_ratio_max,
+                num_heads=self.num_heads,
+                max_position_embeddings=self.max_position_embeddings,
+                base=self.rope_theta,
+            )
+        else:
+            scaling_type = self.config.rope_scaling["type"]
+            scaling_factor = self.config.rope_scaling["factor"]
+            if scaling_type == "linear":
+                assert False  # not implemented
+                self.rotary_emb = LlamaLinearScalingRotaryEmbedding(
+                    self.head_dim,
+                    min_cratio=self.compress_ratio_min,
+                    max_cratio=self.compress_ratio_max,
+                    num_heads=self.num_heads,
+                    max_position_embeddings=self.max_position_embeddings,
+                    scaling_factor=scaling_factor,
+                    base=self.rope_theta,
+                )
+            elif scaling_type == "dynamic":
+                assert False  # not implemented
+                self.rotary_emb = LlamaDynamicNTKScalingRotaryEmbedding(
+                    self.head_dim,
+                    max_position_embeddings=self.max_position_embeddings,
+                    scaling_factor=scaling_factor,
+                    base=self.rope_theta,
+                )
+            else:
+                raise ValueError(f"Unknown RoPE scaling type {scaling_type}")
+
+    def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
+        return (
+            tensor.view(bsz, seq_len, self.num_heads, self.head_dim)
+            .transpose(1, 2)
+            .contiguous()
+        )
