@@ -244,9 +244,18 @@ class MsPoELlamaAttention(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        past_key_values: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: bool = False,
         use_cache: bool = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+
+        if past_key_values is not None and past_key_value is None:
+            past_key_value = past_key_values
+        elif past_key_values is not None and past_key_value is not None:
+            if past_key_values != past_key_value:
+                raise ValueError("Received both `past_key_value` and `past_key_values` with different values.")
 
         bsz, q_len, _ = hidden_states.size()
 
@@ -311,7 +320,10 @@ class MsPoELlamaAttention(nn.Module):
             if position_length < position_ids.item()+1:
                 position_length = position_ids.item()+1
 
-        cos, sin = self.rotary_emb(value_states, seq_len=position_length)
+        if position_embeddings is not None:
+            cos, sin = position_embeddings
+        else:
+            cos, sin = self.rotary_emb(value_states, seq_len=position_length)
 
         if self.enable_head_metrics:
             self.head_order = self._head_wise_statistics(query_states, key_states, q_len, kv_seq_len, bsz, attention_mask)
