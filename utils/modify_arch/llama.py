@@ -1,3 +1,4 @@
+
 from typing import Optional, Tuple
 
 import os
@@ -238,34 +239,18 @@ class MsPoELlamaAttention(nn.Module):
     def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
         return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
 
-    
-    
     def forward(
         self,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Tuple[torch.Tensor]] = None,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: bool = False,
         use_cache: bool = False,
-        **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
 
         bsz, q_len, _ = hidden_states.size()
 
-        # ------------------------------------------------------------
-        # Normalize past_key_values format (HF safety)
-        # ------------------------------------------------------------
-        # HF may pass either:
-        #   (key, value)
-        # or
-        #   ((k0,v0), (k1,v1), ...)
-        if past_key_values is not None and isinstance(past_key_values[0], tuple):
-            past_key_values = past_key_values[0]
-
-        # ------------------------------------------------------------
-        # Project QKV
-        # ------------------------------------------------------------
         if self.config.pretraining_tp > 1:
             key_value_slicing = (
                 self.num_key_value_heads * self.head_dim
@@ -276,18 +261,24 @@ class MsPoELlamaAttention(nn.Module):
             key_slices = self.k_proj.weight.split(key_value_slicing, dim=0)
             value_slices = self.v_proj.weight.split(key_value_slicing, dim=0)
 
-            query_states = torch.cat(
-                [F.linear(hidden_states, query_slices[i]) for i in range(self.config.pretraining_tp)],
-                dim=-1,
-            )
-            key_states = torch.cat(
-                [F.linear(hidden_states, key_slices[i]) for i in range(self.config.pretraining_tp)],
-                dim=-1,
-            )
-            value_states = torch.cat(
-                [F.linear(hidden_states, value_slices[i]) for i in range(self.config.pretraining_tp)],
-                dim=-1,
-            )
+            query_states = [
+                F.linear(hidden_states, query_slices[i])
+                for i in range(self.config.pretraining_tp)
+            ]
+            query_states = torch.cat(query_states, dim=-1)
+
+            key_states = [
+                F.linear(hidden_states, key_slices[i])
+                for i in range(self.config.pretraining_tp)
+            ]
+            key_states = torch.cat(key_states, dim=-1)
+
+            value_states = [
+                F.linear(hidden_states, value_slices[i])
+                for i in range(self.config.pretraining_tp)
+            ]
+            value_states = torch.cat(value_states, dim=-1)
+
         else:
             query_states = self.q_proj(hidden_states)
             key_states = self.k_proj(hidden_states)
@@ -303,86 +294,82 @@ class MsPoELlamaAttention(nn.Module):
             bsz, q_len, self.num_key_value_heads, self.head_dim
         ).transpose(1, 2)
 
-        # ------------------------------------------------------------
-        # Causal mask
-        # ------------------------------------------------------------
-        past_len = past_key_values[0].shape[-2] if past_key_values is not None else 0
+        # remake causal mask
         attention_mask = _make_causal_mask(
             bsz=bsz,
             tgt_len=q_len,
-            past_key_values_length=past_len,
+            past_key_values_length=past_key_value[0].shape[-2] if past_key_value is not None else 0,
             dtype=query_states.dtype,
             device=query_states.device,
         )
 
-        kv_seq_len = key_states.shape[-2] + past_len
+        kv_seq_len = key_states.shape[-2]
+        if past_key_value is not None:
+            kv_seq_len += past_key_value[0].shape[-2]
 
         position_length = kv_seq_len
         if not position_ids.nelement() > 1:
-            if position_length < position_ids.item() + 1:
-                position_length = position_ids.item() + 1
+            if position_length < position_ids.item()+1:
+                position_length = position_ids.item()+1
 
-        # ------------------------------------------------------------
-        # Ms-PoE Rotary Embedding
-        # ------------------------------------------------------------
         cos, sin = self.rotary_emb(value_states, seq_len=position_length)
 
-
-# Only compute head metrics on prefill (no KV cache yet)
-        if self.enable_head_metrics and past_len == 0:
-            self.head_order = self._head_wise_statistics(
-                query_states, key_states, q_len, kv_seq_len, bsz, attention_mask
-            )
+        if self.enable_head_metrics:
+            self.head_order = self._head_wise_statistics(query_states, key_states, q_len, kv_seq_len, bsz, attention_mask)
             self.enable_head_metrics = False
-
-        # If we're in cached decoding and head_order isn't set, fall back safely
-        if self.head_order is None:
-            self.head_order = torch.arange(self.num_heads, device=query_states.device)
 
         cos = cos[self.head_order, :, :]
         sin = sin[self.head_order, :, :]
-
-        query_states = apply_rotary_pos_emb_single_scaling(
-            query_states, cos, sin, position_ids
-        )
+        query_states = apply_rotary_pos_emb_single_scaling(query_states, cos, sin, position_ids)
 
         cos, sin = sample_rotary_emb(cos, sin, self.num_key_value_groups)
-        key_states = apply_rotary_pos_emb_single_scaling(
-            key_states, cos, sin, position_ids
-        )
+        key_states = apply_rotary_pos_emb_single_scaling(key_states, cos, sin, position_ids)
 
-        # ------------------------------------------------------------
-        # KV cache append
-        # ------------------------------------------------------------
-        if past_key_values is not None:
-            key_states = torch.cat([past_key_values[0], key_states], dim=2)
-            value_states = torch.cat([past_key_values[1], value_states], dim=2)
+        if past_key_value is not None:
+            # reuse k, v, self_attention
+            key_states = torch.cat([past_key_value[0], key_states], dim=2)
+            value_states = torch.cat([past_key_value[1], value_states], dim=2)
 
-        past_key_values = (key_states, value_states) if use_cache else None
+        # key/value are already rotated
+        past_key_value = (key_states, value_states) if use_cache else None
 
-        # ------------------------------------------------------------
-        # Attention
-        # ------------------------------------------------------------
+        # repeat k/v heads if n_kv_heads < n_heads
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
-        attn_weights = torch.matmul(
-            query_states, key_states.transpose(2, 3)
-        ) / math.sqrt(self.head_dim)
+        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(
+            self.head_dim
+        )
 
-        attn_weights = attn_weights + attention_mask
+        if attn_weights.size() != (bsz, self.num_heads, q_len, kv_seq_len):
+            raise ValueError(
+                f"Attention weights should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is"
+                f" {attn_weights.size()}"
+            )
 
-        attn_weights = nn.functional.softmax(
-            attn_weights, dim=-1, dtype=torch.float32
-        ).to(query_states.dtype)
+        if attention_mask is not None:
+            if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
+                raise ValueError(
+                    f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
+                )
+            attn_weights = attn_weights + attention_mask
+
+        # upcast attention to fp32
+        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(
+            query_states.dtype
+        )
 
         attn_output = torch.matmul(attn_weights, value_states)
+
+        if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
+            raise ValueError(
+                f"`attn_output` should be of size {(bsz, self.num_heads, q_len, self.head_dim)}, but is"
+                f" {attn_output.size()}"
+            )
+
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
 
-        # ------------------------------------------------------------
-        # Output projection
-        # ------------------------------------------------------------
         if self.config.pretraining_tp > 1:
             attn_output = attn_output.split(
                 self.hidden_size // self.config.pretraining_tp, dim=2
@@ -391,8 +378,10 @@ class MsPoELlamaAttention(nn.Module):
                 self.hidden_size // self.config.pretraining_tp, dim=1
             )
             attn_output = sum(
-                F.linear(attn_output[i], o_proj_slices[i])
-                for i in range(self.config.pretraining_tp)
+                [
+                    F.linear(attn_output[i], o_proj_slices[i])
+                    for i in range(self.config.pretraining_tp)
+                ]
             )
         else:
             attn_output = self.o_proj(attn_output)
@@ -400,10 +389,8 @@ class MsPoELlamaAttention(nn.Module):
         if not output_attentions:
             attn_weights = None
 
-        if use_cache:
-            return attn_output, attn_weights, past_key_values
-        else:
-            return attn_output, attn_weights
+        return attn_output, attn_weights, past_key_value
+
 
 class MsPoELlamaForCausalLM(LlamaForCausalLM):
     def __init__(self, config):
@@ -417,3 +404,4 @@ class MsPoELlamaForCausalLM(LlamaForCausalLM):
         for layer_idx in self.config.apply_layers:
             self.model.layers[layer_idx].self_attn.enable_head_metrics = True
             self.model.layers[layer_idx].self_attn.head_order = None
+
