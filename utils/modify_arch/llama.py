@@ -98,42 +98,43 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         min_ratio = self.min_ratio
         max_ratio = self.max_ratio
         num_heads = self.num_heads
-        beta = self.beta  # add this as a config parameter
 
         self.max_seq_len_cached = seq_len
 
-        # positions
+        # positions [H, L]
         t = torch.arange(
             self.max_seq_len_cached,
             device=device,
             dtype=self.inv_freq.dtype
-        ).repeat(num_heads, 1)  # [H, L]
+        ).repeat(num_heads, 1)
 
-        # per-head compression ratio
+        # per-head compression ratio [H, 1]
         compress_ratio = torch.arange(
             num_heads,
             device=device,
             dtype=self.inv_freq.dtype
         )
         compress_ratio = min_ratio + (max_ratio - min_ratio) * (compress_ratio / num_heads)
-        compress_ratio = compress_ratio.unsqueeze(-1)  # [H, 1]
+        compress_ratio = compress_ratio.unsqueeze(-1)
 
-        # --- PROBABILITY MASK ---
+        # -------- probability definition --------
+        L = self.max_seq_len_cached
+        beta = 5.0 / L  # HARD-CODED, SCALE-AWARE
+
         pos = torch.arange(
-            self.max_seq_len_cached,
+            L,
             device=device,
             dtype=self.inv_freq.dtype
         )  # [L]
 
-        # increasing probability
         P = torch.exp(beta * pos)
-        P = P / P.max()  # normalize to [0,1]
+        P = P / P.max()  # ensure P in [0, 1]
 
-        # sample Bernoulli mask
-        mask = torch.bernoulli(P).unsqueeze(0)  # [1, L]
-        mask = mask.expand(num_heads, -1)       # [H, L]
+        # Bernoulli sampling
+        mask = torch.bernoulli(P).unsqueeze(0)   # [1, L]
+        mask = mask.expand(num_heads, -1)        # [H, L]
 
-        # apply compression only where mask == 1
+        # stochastic compression
         t = torch.where(mask.bool(), t / compress_ratio, t)
 
         freqs = torch.einsum("ki,j->kij", t, self.inv_freq)
@@ -141,7 +142,6 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
 
         self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
         self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
-
     def forward(self, x, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len > self.max_seq_len_cached:
