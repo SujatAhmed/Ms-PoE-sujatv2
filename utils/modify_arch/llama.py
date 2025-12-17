@@ -403,4 +403,3 @@ class MsPoELlamaForCausalLM(LlamaForCausalLM):
         for layer_idx in self.config.apply_layers:
             self.model.layers[layer_idx].self_attn.enable_head_metrics = True
             self.model.layers[layer_idx].self_attn.head_order = None
-
