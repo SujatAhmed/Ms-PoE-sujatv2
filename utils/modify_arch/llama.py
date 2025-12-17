@@ -93,20 +93,52 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
             seq_len=max_position_embeddings, device=self.inv_freq.device, dtype=torch.get_default_dtype()
         )
 
+        
     def _set_cos_sin_cache(self, seq_len, device, dtype):
         min_ratio = self.min_ratio
         max_ratio = self.max_ratio
         num_heads = self.num_heads
-        self.max_seq_len_cached = seq_len
-        t = torch.arange(self.max_seq_len_cached, device=device, dtype=self.inv_freq.dtype).repeat(num_heads,1)
-        compress_ratio = torch.arange(num_heads, device=device, dtype=self.inv_freq.dtype)
-        compress_ratio = min_ratio + (max_ratio - min_ratio) * (compress_ratio / num_heads)
-        compress_ratio = compress_ratio.unsqueeze(-1)
+        beta = self.beta  # add this as a config parameter
 
-        t = t / compress_ratio
+        self.max_seq_len_cached = seq_len
+
+        # positions
+        t = torch.arange(
+            self.max_seq_len_cached,
+            device=device,
+            dtype=self.inv_freq.dtype
+        ).repeat(num_heads, 1)  # [H, L]
+
+        # per-head compression ratio
+        compress_ratio = torch.arange(
+            num_heads,
+            device=device,
+            dtype=self.inv_freq.dtype
+        )
+        compress_ratio = min_ratio + (max_ratio - min_ratio) * (compress_ratio / num_heads)
+        compress_ratio = compress_ratio.unsqueeze(-1)  # [H, 1]
+
+        # --- PROBABILITY MASK ---
+        pos = torch.arange(
+            self.max_seq_len_cached,
+            device=device,
+            dtype=self.inv_freq.dtype
+        )  # [L]
+
+        # increasing probability
+        P = torch.exp(beta * pos)
+        P = P / P.max()  # normalize to [0,1]
+
+        # sample Bernoulli mask
+        mask = torch.bernoulli(P).unsqueeze(0)  # [1, L]
+        mask = mask.expand(num_heads, -1)       # [H, L]
+
+        # apply compression only where mask == 1
+        t = torch.where(mask.bool(), t / compress_ratio, t)
+
         freqs = torch.einsum("ki,j->kij", t, self.inv_freq)
-        # Different from paper, but it uses a different permutation in order to obtain the same calculation
         emb = torch.cat((freqs, freqs), dim=-1)
+
         self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
         self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
 
