@@ -329,15 +329,15 @@ class MsPoELlamaAttention(nn.Module):
 
 
 # Only compute head metrics on prefill (no KV cache yet)
-    if self.enable_head_metrics and past_len == 0:
-        self.head_order = self._head_wise_statistics(
-            query_states, key_states, q_len, kv_seq_len, bsz, attention_mask
-        )
-        self.enable_head_metrics = False
+        if self.enable_head_metrics and past_len == 0:
+            self.head_order = self._head_wise_statistics(
+                query_states, key_states, q_len, kv_seq_len, bsz, attention_mask
+            )
+            self.enable_head_metrics = False
 
-    # If we're in cached decoding and head_order isn't set, fall back safely
-    if self.head_order is None:
-        self.head_order = torch.arange(self.num_heads, device=query_states.device)
+        # If we're in cached decoding and head_order isn't set, fall back safely
+        if self.head_order is None:
+            self.head_order = torch.arange(self.num_heads, device=query_states.device)
 
         cos = cos[self.head_order, :, :]
         sin = sin[self.head_order, :, :]
