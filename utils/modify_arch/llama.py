@@ -400,8 +400,10 @@ class MsPoELlamaAttention(nn.Module):
         if not output_attentions:
             attn_weights = None
 
-        return attn_output, attn_weights, past_key_values
-
+        if use_cache:
+            return attn_output, attn_weights, past_key_values
+        else:
+            return attn_output, attn_weights
 
 class MsPoELlamaForCausalLM(LlamaForCausalLM):
     def __init__(self, config):
