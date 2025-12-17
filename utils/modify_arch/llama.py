@@ -239,6 +239,7 @@ class MsPoELlamaAttention(nn.Module):
         return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
 
     
+    
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -252,6 +253,19 @@ class MsPoELlamaAttention(nn.Module):
 
         bsz, q_len, _ = hidden_states.size()
 
+        # ------------------------------------------------------------
+        # Normalize past_key_values format (HF safety)
+        # ------------------------------------------------------------
+        # HF may pass either:
+        #   (key, value)
+        # or
+        #   ((k0,v0), (k1,v1), ...)
+        if past_key_values is not None and isinstance(past_key_values[0], tuple):
+            past_key_values = past_key_values[0]
+
+        # ------------------------------------------------------------
+        # Project QKV
+        # ------------------------------------------------------------
         if self.config.pretraining_tp > 1:
             key_value_slicing = (
                 self.num_key_value_heads * self.head_dim
@@ -262,23 +276,18 @@ class MsPoELlamaAttention(nn.Module):
             key_slices = self.k_proj.weight.split(key_value_slicing, dim=0)
             value_slices = self.v_proj.weight.split(key_value_slicing, dim=0)
 
-            query_states = [
-                F.linear(hidden_states, query_slices[i])
-                for i in range(self.config.pretraining_tp)
-            ]
-            query_states = torch.cat(query_states, dim=-1)
-
-            key_states = [
-                F.linear(hidden_states, key_slices[i])
-                for i in range(self.config.pretraining_tp)
-            ]
-            key_states = torch.cat(key_states, dim=-1)
-
-            value_states = [
-                F.linear(hidden_states, value_slices[i])
-                for i in range(self.config.pretraining_tp)
-            ]
-            value_states = torch.cat(value_states, dim=-1)
+            query_states = torch.cat(
+                [F.linear(hidden_states, query_slices[i]) for i in range(self.config.pretraining_tp)],
+                dim=-1,
+            )
+            key_states = torch.cat(
+                [F.linear(hidden_states, key_slices[i]) for i in range(self.config.pretraining_tp)],
+                dim=-1,
+            )
+            value_states = torch.cat(
+                [F.linear(hidden_states, value_slices[i]) for i in range(self.config.pretraining_tp)],
+                dim=-1,
+            )
         else:
             query_states = self.q_proj(hidden_states)
             key_states = self.k_proj(hidden_states)
@@ -294,24 +303,28 @@ class MsPoELlamaAttention(nn.Module):
             bsz, q_len, self.num_key_value_heads, self.head_dim
         ).transpose(1, 2)
 
-        # remake causal mask
+        # ------------------------------------------------------------
+        # Causal mask
+        # ------------------------------------------------------------
+        past_len = past_key_values[0].shape[-2] if past_key_values is not None else 0
         attention_mask = _make_causal_mask(
             bsz=bsz,
             tgt_len=q_len,
-            past_key_values_length=past_key_values[0].shape[-2] if past_key_values is not None else 0,
+            past_key_values_length=past_len,
             dtype=query_states.dtype,
             device=query_states.device,
         )
 
-        kv_seq_len = key_states.shape[-2]
-        if past_key_values is not None:
-            kv_seq_len += past_key_values[0].shape[-2]
+        kv_seq_len = key_states.shape[-2] + past_len
 
         position_length = kv_seq_len
         if not position_ids.nelement() > 1:
             if position_length < position_ids.item() + 1:
                 position_length = position_ids.item() + 1
 
+        # ------------------------------------------------------------
+        # Ms-PoE Rotary Embedding
+        # ------------------------------------------------------------
         cos, sin = self.rotary_emb(value_states, seq_len=position_length)
 
         if self.enable_head_metrics:
@@ -332,12 +345,18 @@ class MsPoELlamaAttention(nn.Module):
             key_states, cos, sin, position_ids
         )
 
+        # ------------------------------------------------------------
+        # KV cache append
+        # ------------------------------------------------------------
         if past_key_values is not None:
             key_states = torch.cat([past_key_values[0], key_states], dim=2)
             value_states = torch.cat([past_key_values[1], value_states], dim=2)
 
         past_key_values = (key_states, value_states) if use_cache else None
 
+        # ------------------------------------------------------------
+        # Attention
+        # ------------------------------------------------------------
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
@@ -345,8 +364,7 @@ class MsPoELlamaAttention(nn.Module):
             query_states, key_states.transpose(2, 3)
         ) / math.sqrt(self.head_dim)
 
-        if attention_mask is not None:
-            attn_weights = attn_weights + attention_mask
+        attn_weights = attn_weights + attention_mask
 
         attn_weights = nn.functional.softmax(
             attn_weights, dim=-1, dtype=torch.float32
@@ -356,6 +374,9 @@ class MsPoELlamaAttention(nn.Module):
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
 
+        # ------------------------------------------------------------
+        # Output projection
+        # ------------------------------------------------------------
         if self.config.pretraining_tp > 1:
             attn_output = attn_output.split(
                 self.hidden_size // self.config.pretraining_tp, dim=2
