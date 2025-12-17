@@ -244,9 +244,16 @@ class MsPoELlamaAttention(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        past_key_values: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: bool = False,
         use_cache: bool = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+
+        if past_key_values is not None and past_key_value is None:
+            past_key_value = past_key_values
+        elif past_key_values is not None and past_key_value is not None:
+            if past_key_values != past_key_value:
+                raise ValueError("Received both `past_key_value` and `past_key_values` with different values.")
 
         bsz, q_len, _ = hidden_states.size()
 
