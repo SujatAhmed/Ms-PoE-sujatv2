@@ -238,14 +238,16 @@ class MsPoELlamaAttention(nn.Module):
     def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
         return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
 
+    
     def forward(
         self,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        past_key_values: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: bool = False,
         use_cache: bool = False,
+        **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
 
         bsz, q_len, _ = hidden_states.size()
@@ -277,7 +279,6 @@ class MsPoELlamaAttention(nn.Module):
                 for i in range(self.config.pretraining_tp)
             ]
             value_states = torch.cat(value_states, dim=-1)
-
         else:
             query_states = self.q_proj(hidden_states)
             key_states = self.k_proj(hidden_states)
@@ -297,75 +298,61 @@ class MsPoELlamaAttention(nn.Module):
         attention_mask = _make_causal_mask(
             bsz=bsz,
             tgt_len=q_len,
-            past_key_values_length=past_key_value[0].shape[-2] if past_key_value is not None else 0,
+            past_key_values_length=past_key_values[0].shape[-2] if past_key_values is not None else 0,
             dtype=query_states.dtype,
             device=query_states.device,
         )
 
         kv_seq_len = key_states.shape[-2]
-        if past_key_value is not None:
-            kv_seq_len += past_key_value[0].shape[-2]
+        if past_key_values is not None:
+            kv_seq_len += past_key_values[0].shape[-2]
 
         position_length = kv_seq_len
         if not position_ids.nelement() > 1:
-            if position_length < position_ids.item()+1:
-                position_length = position_ids.item()+1
+            if position_length < position_ids.item() + 1:
+                position_length = position_ids.item() + 1
 
         cos, sin = self.rotary_emb(value_states, seq_len=position_length)
 
         if self.enable_head_metrics:
-            self.head_order = self._head_wise_statistics(query_states, key_states, q_len, kv_seq_len, bsz, attention_mask)
+            self.head_order = self._head_wise_statistics(
+                query_states, key_states, q_len, kv_seq_len, bsz, attention_mask
+            )
             self.enable_head_metrics = False
 
         cos = cos[self.head_order, :, :]
         sin = sin[self.head_order, :, :]
-        query_states = apply_rotary_pos_emb_single_scaling(query_states, cos, sin, position_ids)
+
+        query_states = apply_rotary_pos_emb_single_scaling(
+            query_states, cos, sin, position_ids
+        )
 
         cos, sin = sample_rotary_emb(cos, sin, self.num_key_value_groups)
-        key_states = apply_rotary_pos_emb_single_scaling(key_states, cos, sin, position_ids)
+        key_states = apply_rotary_pos_emb_single_scaling(
+            key_states, cos, sin, position_ids
+        )
 
-        if past_key_value is not None:
-            # reuse k, v, self_attention
-            key_states = torch.cat([past_key_value[0], key_states], dim=2)
-            value_states = torch.cat([past_key_value[1], value_states], dim=2)
+        if past_key_values is not None:
+            key_states = torch.cat([past_key_values[0], key_states], dim=2)
+            value_states = torch.cat([past_key_values[1], value_states], dim=2)
 
-        # key/value are already rotated
-        past_key_value = (key_states, value_states) if use_cache else None
+        past_key_values = (key_states, value_states) if use_cache else None
 
-        # repeat k/v heads if n_kv_heads < n_heads
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
-        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(
-            self.head_dim
-        )
-
-        if attn_weights.size() != (bsz, self.num_heads, q_len, kv_seq_len):
-            raise ValueError(
-                f"Attention weights should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is"
-                f" {attn_weights.size()}"
-            )
+        attn_weights = torch.matmul(
+            query_states, key_states.transpose(2, 3)
+        ) / math.sqrt(self.head_dim)
 
         if attention_mask is not None:
-            if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
-                raise ValueError(
-                    f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
-                )
             attn_weights = attn_weights + attention_mask
 
-        # upcast attention to fp32
-        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(
-            query_states.dtype
-        )
+        attn_weights = nn.functional.softmax(
+            attn_weights, dim=-1, dtype=torch.float32
+        ).to(query_states.dtype)
 
         attn_output = torch.matmul(attn_weights, value_states)
-
-        if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
-            raise ValueError(
-                f"`attn_output` should be of size {(bsz, self.num_heads, q_len, self.head_dim)}, but is"
-                f" {attn_output.size()}"
-            )
-
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
 
@@ -377,10 +364,8 @@ class MsPoELlamaAttention(nn.Module):
                 self.hidden_size // self.config.pretraining_tp, dim=1
             )
             attn_output = sum(
-                [
-                    F.linear(attn_output[i], o_proj_slices[i])
-                    for i in range(self.config.pretraining_tp)
-                ]
+                F.linear(attn_output[i], o_proj_slices[i])
+                for i in range(self.config.pretraining_tp)
             )
         else:
             attn_output = self.o_proj(attn_output)
@@ -388,7 +373,7 @@ class MsPoELlamaAttention(nn.Module):
         if not output_attentions:
             attn_weights = None
 
-        return attn_output, attn_weights, past_key_value
+        return attn_output, attn_weights, past_key_values
 
 
 class MsPoELlamaForCausalLM(LlamaForCausalLM):
