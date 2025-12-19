@@ -72,6 +72,7 @@ if __name__ == '__main__':
     parser.add_argument("--head_type", type=str, default=None)
     parser.add_argument("--compress_ratio_min", type=float, default=1.2)
     parser.add_argument("--compress_ratio_max", type=float, default=1.8)
+    parser.add_argument("--compress_ratio_prob", type=float, default=1.0)
 
     parser.add_argument('--only_true', action='store_true', help='Only use the relevent documenets in the prompt')
     parser.add_argument("--sample_num", type=int, default=10)
