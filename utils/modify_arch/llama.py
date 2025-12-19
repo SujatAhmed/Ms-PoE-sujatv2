@@ -1,3 +1,4 @@
+
 from typing import Optional, Tuple
 
 import os
@@ -125,10 +126,12 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
             dtype=torch.get_default_dtype(),
         )
 
+        
     def _set_cos_sin_cache(self, seq_len, device, dtype):
         min_ratio = self.min_ratio
         max_ratio = self.max_ratio
         num_heads = self.num_heads
+
         self.max_seq_len_cached = seq_len
         t = torch.arange(
             self.max_seq_len_cached, device=device, dtype=self.inv_freq.dtype
@@ -147,11 +150,10 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         else:
             t = t / compress_ratio
         freqs = torch.einsum("ki,j->kij", t, self.inv_freq)
-        # Different from paper, but it uses a different permutation in order to obtain the same calculation
         emb = torch.cat((freqs, freqs), dim=-1)
+
         self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
         self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
-
     def forward(self, x, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len > self.max_seq_len_cached:
