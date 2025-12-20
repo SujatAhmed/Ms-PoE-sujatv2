@@ -118,19 +118,21 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         compress_ratio = compress_ratio.unsqueeze(-1)
 
         # -------- probability definition --------
+        
         L = self.max_seq_len_cached
-        beta = 5.0 / L  # HARD-CODED, SCALE-AWARE
+
+        mu = L / 2
+        sigma = L / 6
 
         pos = torch.arange(
             L,
             device=device,
             dtype=self.inv_freq.dtype
-        )  # [L]
+        )
 
-        P = torch.exp(beta * pos)
-        P = P / P.max()  # ensure P in [0, 1]
+        P = torch.exp(-0.5 * ((pos - mu) / sigma) ** 2)
+        P = P / P.max()
 
-        # Bernoulli sampling
         mask = torch.bernoulli(P).unsqueeze(0)   # [1, L]
         mask = mask.expand(num_heads, -1)        # [H, L]
 
