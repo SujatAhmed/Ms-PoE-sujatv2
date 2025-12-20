@@ -117,12 +117,11 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         compress_ratio = min_ratio + (max_ratio - min_ratio) * (compress_ratio / num_heads)
         compress_ratio = compress_ratio.unsqueeze(-1)
 
-        # -------- probability definition --------
         
+        # -------- probability definition (Softplus, monotonic) --------
         L = self.max_seq_len_cached
 
-        mu = L / 2
-        sigma = L / 6
+        beta = 5.0 / L   # controls steepness
 
         pos = torch.arange(
             L,
@@ -130,8 +129,8 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
             dtype=self.inv_freq.dtype
         )
 
-        P = torch.exp(-0.5 * ((pos - mu) / sigma) ** 2)
-        P = P / P.max()
+        P = F.softplus(beta * pos)
+        P = P / P.max()   # normalize to [0, 1]
 
         mask = torch.bernoulli(P).unsqueeze(0)   # [1, L]
         mask = mask.expand(num_heads, -1)        # [H, L]
