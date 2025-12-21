@@ -118,31 +118,31 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         compress_ratio = compress_ratio.unsqueeze(-1)
 
         
-        # -------- probability definition (Softplus, monotonic) --------
-        L = self.max_seq_len_cached
+    # -------- probability definition --------  
+        L = self.max_seq_len_cached  
+        beta = 5.0 / L  # HARD-CODED, SCALE-AWARE  
 
-        beta = 5.0 / L   # controls steepness
+        pos = torch.arange(  
+            L,  
+            device=device,  
+            dtype=self.inv_freq.dtype  
+        )  # [L]  
 
-        pos = torch.arange(
-            L,
-            device=device,
-            dtype=self.inv_freq.dtype
-        )
+        P = torch.exp(beta * pos)  
+        P = P / P.max()  # ensure P in [0, 1]  
 
-        P = F.softplus(beta * pos)
-        P = P / P.max()   # normalize to [0, 1]
+        # Bernoulli sampling  
+        mask = torch.bernoulli(P).unsqueeze(0)   # [1, L]  
+        mask = mask.expand(num_heads, -1)        # [H, L]  
 
-        mask = torch.bernoulli(P).unsqueeze(0)   # [1, L]
-        mask = mask.expand(num_heads, -1)        # [H, L]
-
-        # stochastic compression
-        t = torch.where(mask.bool(), t / compress_ratio, t)
-
-        freqs = torch.einsum("ki,j->kij", t, self.inv_freq)
-        emb = torch.cat((freqs, freqs), dim=-1)
+        # stochastic compression  
+        t = torch.where(mask.bool(), t / compress_ratio, t)  
+            freqs = torch.einsum("ki,j->kij", t, self.inv_freq)
+            emb = torch.cat((freqs, freqs), dim=-1)
 
         self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
         self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
+
     def forward(self, x, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len > self.max_seq_len_cached:
