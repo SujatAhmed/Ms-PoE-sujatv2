@@ -137,8 +137,8 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
 
         # stochastic compression  
         t = torch.where(mask.bool(), t / compress_ratio, t)  
-            freqs = torch.einsum("ki,j->kij", t, self.inv_freq)
-            emb = torch.cat((freqs, freqs), dim=-1)
+        freqs = torch.einsum("ki,j->kij", t, self.inv_freq)
+        emb = torch.cat((freqs, freqs), dim=-1)
 
         self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
         self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
