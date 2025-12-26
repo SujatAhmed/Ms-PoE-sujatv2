@@ -264,6 +264,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
 
 
     def _set_cos_sin_cache_mspoe(self, seq_len, device, dtype):
+        print("From mspoe caching")
         min_ratio = self.min_ratio
         max_ratio = self.max_ratio
         num_heads = self.num_heads
@@ -289,7 +290,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
             # self._set_cos_sin_cache_beta_approx(seq_len=seq_len, device=x.device, dtype=x.dtype)
             # self._set_cos_sin_cache_exponential(seq_len=seq_len, device=x.device, dtype=x.dtype)
             # self._set_cos_sin_cache_softmax(seq_len=seq_len, device=x.device, dtype=x.dtype)
-             self._set_cos_sin_cache_mspoe(seq_len=seq_len, device=x.device, dtype=x.dtype)
+            self._set_cos_sin_cache_mspoe(seq_len=seq_len, device=x.device, dtype=x.dtype)
             
 
 
