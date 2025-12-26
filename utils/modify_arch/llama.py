@@ -212,7 +212,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
 
         r = torch.linspace(min_ratio, max_ratio, num_heads, device=device).unsqueeze(1)
 
-        P = 1.0 - torch.exp(-lam * x)
+        P =  torch.exp(-lam * x)
         U = torch.rand(num_heads, seq_len, device=device)
         mask = (U < P).float()
 
