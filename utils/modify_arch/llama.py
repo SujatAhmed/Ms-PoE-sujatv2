@@ -255,7 +255,12 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
     def forward(self, x, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len > self.max_seq_len_cached:
-            self._set_cos_sin_cache_softmax(seq_len=seq_len, device=x.device, dtype=x.dtype)
+            self._set_cos_sin_cache_sigmoid(seq_len=seq_len, device=x.device, dtype=x.dtype)
+            # self._set_cos_sin_cache_powerlaw(seq_len=seq_len, device=x.device, dtype=x.dtype)
+            # self._set_cos_sin_cache_beta(seq_len=seq_len, device=x.device, dtype=x.dtype)
+            # self._set_cos_sin_cache_exponential(seq_len=seq_len, device=x.device, dtype=x.dtype)
+            # self._set_cos_sin_cache_softmax(seq_len=seq_len, device=x.device, dtype=x.dtype)
+
 
         return (
             self.cos_cached[:,:seq_len].to(dtype=x.dtype),
