@@ -235,6 +235,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         - compression ratio: fixed per head
         - compression application: stochastic per position
         """
+        print("beta approximate caching")
 
         min_ratio = self.min_ratio
         max_ratio = self.max_ratio
