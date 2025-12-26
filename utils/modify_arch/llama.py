@@ -199,37 +199,74 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
         self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
 
-    def _set_cos_sin_cache_exponential(self, seq_len, device, dtype, lam=0.1):
-        print("exponential caching \n")
+    
+    def _set_cos_sin_cache_exponential(
+        self,
+        seq_len,
+        device,
+        dtype,
+        m=5.0,          # lambda
+    ):
+        """
+        Exponential probability:
+            P(p) = 1 - exp(-m * p / L)
+
+        - domain: p in [0, seq_len]
+        - range:  [0, 1)
+        - Bernoulli sampled PER TOKEN POSITION
+        - compression ratio fixed per head
+        """
+
         min_ratio = self.min_ratio
         max_ratio = self.max_ratio
         num_heads = self.num_heads
 
         self.max_seq_len_cached = seq_len
 
+        # ---- positions ----
         p = torch.arange(seq_len, device=device, dtype=torch.float32)
-        x = p / (seq_len - 1)
+        L = float(seq_len)
 
-        r = torch.linspace(min_ratio, max_ratio, num_heads, device=device).unsqueeze(1)
+        # ---- probability curve (EXACT from the image) ----
+        # P(p) = 1 - exp(-m * p / L)
+        P = 1.0 - torch.exp(-m * (p / L))          # [seq_len]
 
-        P = 1 - torch.exp(-lam * x)
+        # ---- head-wise compression ratios ----
+        r = torch.linspace(
+            min_ratio,
+            max_ratio,
+            num_heads,
+            device=device,
+            dtype=torch.float32,
+        ).unsqueeze(1)                           # [num_heads, 1]
+
+        # ---- Bernoulli sampling PER TOKEN ----
         U = torch.rand(num_heads, seq_len, device=device)
-        mask = (U < P).float()
+        mask = (U < P.unsqueeze(0)).float()      # [head, seq_len]
 
-        t = p.unsqueeze(0).repeat(num_heads, 1)
-        t_eff = t / (1 + mask * (r - 1))
+        # ---- effective positions ----
+        t = p.unsqueeze(0).repeat(num_heads, 1)  # [head, seq_len]
 
+        # If mask == 1 → compress by r_i
+        # If mask == 0 → identity
+        t_eff = t / (1.0 + mask * (r - 1.0))
+
+        # ---- RoPE ----
         freqs = torch.einsum("ki,j->kij", t_eff, self.inv_freq)
         emb = torch.cat([freqs, freqs], dim=-1)
 
-        self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
-        self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
+        self.register_buffer(
+            "cos_cached", emb.cos().to(dtype), persistent=False
+        )
+        self.register_buffer(
+            "sin_cached", emb.sin().to(dtype), persistent=False
+        )
 
 
     def forward(self, x, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len > self.max_seq_len_cached:
-            self._set_cos_sin_cache_sigmoid(seq_len=seq_len, device=x.device, dtype=x.dtype)
+            #self._set_cos_sin_cache_sigmoid(seq_len=seq_len, device=x.device, dtype=x.dtype)
             # self._set_cos_sin_cache_powerlaw(seq_len=seq_len, device=x.device, dtype=x.dtype)
             # self._set_cos_sin_cache_beta_approx(seq_len=seq_len, device=x.device, dtype=x.dtype)
             self._set_cos_sin_cache_exponential(seq_len=seq_len, device=x.device, dtype=x.dtype)
