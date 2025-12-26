@@ -199,108 +199,40 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
         self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
 
-    def _set_cos_sin_cache_exponential(self, seq_len, device, dtype, lam=5.0):
-        print("exponential caching \n")
-        min_ratio = self.min_ratio
-        max_ratio = self.max_ratio
-        num_heads = self.num_heads
+    # def _set_cos_sin_cache_exponential(self, seq_len, device, dtype, lam=5.0):
+    #     print("exponential caching \n")
+    #     min_ratio = self.min_ratio
+    #     max_ratio = self.max_ratio
+    #     num_heads = self.num_heads
+    #
+    #     self.max_seq_len_cached = seq_len
+    #
+    #     p = torch.arange(seq_len, device=device, dtype=torch.float32)
+    #     x = p / (seq_len - 1)
+    #
+    #     r = torch.linspace(min_ratio, max_ratio, num_heads, device=device).unsqueeze(1)
+    #
+    #     P = 1.0 - torch.exp(-lam * x)
+    #     U = torch.rand(num_heads, seq_len, device=device)
+    #     mask = (U < P).float()
+    #
+    #     t = p.unsqueeze(0).repeat(num_heads, 1)
+    #     t_eff = t / (1 + mask * (r - 1))
+    #
+    #     freqs = torch.einsum("ki,j->kij", t_eff, self.inv_freq)
+    #     emb = torch.cat([freqs, freqs], dim=-1)
+    #
+    #     self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
+    #     self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
 
-        self.max_seq_len_cached = seq_len
-
-        p = torch.arange(seq_len, device=device, dtype=torch.float32)
-        x = p / (seq_len - 1)
-
-        r = torch.linspace(min_ratio, max_ratio, num_heads, device=device).unsqueeze(1)
-
-        P = 1.0 - torch.exp(-lam * x)
-        U = torch.rand(num_heads, seq_len, device=device)
-        mask = (U < P).float()
-
-        t = p.unsqueeze(0).repeat(num_heads, 1)
-        t_eff = t / (1 + mask * (r - 1))
-
-        freqs = torch.einsum("ki,j->kij", t_eff, self.inv_freq)
-        emb = torch.cat([freqs, freqs], dim=-1)
-
-        self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
-        self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
-
-    def _set_cos_sin_cache_beta_approx(self, seq_len, device, dtype, a=2.0, b=5.0):
-        """
-        Stochastic head-wise positional compression using
-        an approximate Beta-CDF for compression probability.
-
-        P(x) ≈ sigmoid((a-1)log(x) - (b-1)log(1-x))
-
-        - compression ratio: fixed per head
-        - compression application: stochastic per position
-        """
-        print("beta approximate caching")
-
-        min_ratio = self.min_ratio
-        max_ratio = self.max_ratio
-        num_heads = self.num_heads
-
-        self.max_seq_len_cached = seq_len
-
-        # positions [0, ..., seq_len-1]
-        p = torch.arange(seq_len, device=device, dtype=torch.float32)
-
-        # normalized positions in (0, 1)
-        # clamp for numerical safety
-        x = p / (seq_len - 1)
-        x = x.clamp(1e-6, 1.0 - 1e-6)
-
-        # head-wise compression ratios r_i
-        # shape: [num_heads, 1]
-        r = torch.linspace(
-            min_ratio,
-            max_ratio,
-            num_heads,
-            device=device,
-            dtype=torch.float32,
-        ).unsqueeze(1)
-
-        # ---- Beta-CDF approximation ----
-        # P(x) ≈ sigmoid((a-1)log(x) - (b-1)log(1-x))
-        P = torch.sigmoid(
-            (a - 1.0) * torch.log(x)
-            - (b - 1.0) * torch.log(1.0 - x)
-        )  # [seq_len]
-
-        # Bernoulli sampling per (head, position)
-        U = torch.rand(num_heads, seq_len, device=device)
-        mask = (U < P).float()  # 1 = compress, 0 = identity
-
-        # base positions per head
-        t = p.unsqueeze(0).repeat(num_heads, 1)
-
-        # effective positions:
-        #   t_eff = t            (mask=0)
-        #   t_eff = t / r_i      (mask=1)
-        t_eff = t / (1.0 + mask * (r - 1.0))
-
-        # RoPE frequencies
-        freqs = torch.einsum("ki,j->kij", t_eff, self.inv_freq)
-
-        # duplicate for cos/sin pairing
-        emb = torch.cat([freqs, freqs], dim=-1)
-
-        # cache
-        self.register_buffer(
-            "cos_cached", emb.cos().to(dtype), persistent=False
-        )
-        self.register_buffer(
-            "sin_cached", emb.sin().to(dtype), persistent=False
-        )
 
     def forward(self, x, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len > self.max_seq_len_cached:
-            # self._set_cos_sin_cache_sigmoid(seq_len=seq_len, device=x.device, dtype=x.dtype)
+            self._set_cos_sin_cache_sigmoid(seq_len=seq_len, device=x.device, dtype=x.dtype)
             # self._set_cos_sin_cache_powerlaw(seq_len=seq_len, device=x.device, dtype=x.dtype)
             # self._set_cos_sin_cache_beta_approx(seq_len=seq_len, device=x.device, dtype=x.dtype)
-             self._set_cos_sin_cache_exponential(seq_len=seq_len, device=x.device, dtype=x.dtype)
+            # self._set_cos_sin_cache_exponential(seq_len=seq_len, device=x.device, dtype=x.dtype)
             # self._set_cos_sin_cache_softmax(seq_len=seq_len, device=x.device, dtype=x.dtype)
 
 
