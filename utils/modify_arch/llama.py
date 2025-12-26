@@ -89,7 +89,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         self.num_heads = num_heads
 
         # Build here to make `torch.jit.trace` work.
-        self._set_cos_sin_cache_exponential(
+        self._set_cos_sin_cache_mspoe(
             seq_len=max_position_embeddings, device=self.inv_freq.device, dtype=torch.get_default_dtype()
         )
 
@@ -263,14 +263,34 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         )
 
 
+    def _set_cos_sin_cache_mspoe(self, seq_len, device, dtype):
+        min_ratio = self.min_ratio
+        max_ratio = self.max_ratio
+        num_heads = self.num_heads
+        self.max_seq_len_cached = seq_len
+        t = torch.arange(self.max_seq_len_cached, device=device, dtype=self.inv_freq.dtype).repeat(num_heads,1)
+        compress_ratio = torch.arange(num_heads, device=device, dtype=self.inv_freq.dtype)
+        compress_ratio = min_ratio + (max_ratio - min_ratio) * (compress_ratio / num_heads)
+        compress_ratio = compress_ratio.unsqueeze(-1)
+
+        t = t / compress_ratio
+        freqs = torch.einsum("ki,j->kij", t, self.inv_freq)
+        # Different from paper, but it uses a different permutation in order to obtain the same calculation
+        emb = torch.cat((freqs, freqs), dim=-1)
+        self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
+        self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
+
+
     def forward(self, x, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len > self.max_seq_len_cached:
             #self._set_cos_sin_cache_sigmoid(seq_len=seq_len, device=x.device, dtype=x.dtype)
             # self._set_cos_sin_cache_powerlaw(seq_len=seq_len, device=x.device, dtype=x.dtype)
             # self._set_cos_sin_cache_beta_approx(seq_len=seq_len, device=x.device, dtype=x.dtype)
-            self._set_cos_sin_cache_exponential(seq_len=seq_len, device=x.device, dtype=x.dtype)
+            # self._set_cos_sin_cache_exponential(seq_len=seq_len, device=x.device, dtype=x.dtype)
             # self._set_cos_sin_cache_softmax(seq_len=seq_len, device=x.device, dtype=x.dtype)
+             self._set_cos_sin_cache_mspoe(seq_len=seq_len, device=x.device, dtype=x.dtype)
+            
 
 
         return (
