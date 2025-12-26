@@ -144,6 +144,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
 
     def _set_cos_sin_cache_sigmoid(self, seq_len, device, dtype, k=10.0, x0=0.5):
+        print("sigmoid caching \n")
         min_ratio = self.min_ratio
         max_ratio = self.max_ratio
         num_heads = self.num_heads
@@ -173,6 +174,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
 
     def _set_cos_sin_cache_powerlaw(self, seq_len, device, dtype, alpha=2.0):
+        print("power law caching \n")
         min_ratio = self.min_ratio
         max_ratio = self.max_ratio
         num_heads = self.num_heads
@@ -198,6 +200,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
 
     def _set_cos_sin_cache_exponential(self, seq_len, device, dtype, lam=5.0):
+        print("exponential caching \n")
         min_ratio = self.min_ratio
         max_ratio = self.max_ratio
         num_heads = self.num_heads
@@ -223,6 +226,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
 
     def _set_cos_sin_cache_beta(self, seq_len, device, dtype, a=2.0, b=5.0):
+        print("beta caching \n")
         min_ratio = self.min_ratio
         max_ratio = self.max_ratio
         num_heads = self.num_heads
