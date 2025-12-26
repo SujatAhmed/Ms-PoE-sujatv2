@@ -89,7 +89,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         self.num_heads = num_heads
 
         # Build here to make `torch.jit.trace` work.
-        self._set_cos_sin_cache(
+        self._set_cos_sin_cache_sigmoid(
             seq_len=max_position_embeddings, device=self.inv_freq.device, dtype=torch.get_default_dtype()
         )
 
