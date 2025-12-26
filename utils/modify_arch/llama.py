@@ -199,7 +199,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
         self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
 
-    def _set_cos_sin_cache_exponential(self, seq_len, device, dtype, lam=5.0):
+    def _set_cos_sin_cache_exponential(self, seq_len, device, dtype, lam=0.7):
         print("exponential caching \n")
         min_ratio = self.min_ratio
         max_ratio = self.max_ratio
