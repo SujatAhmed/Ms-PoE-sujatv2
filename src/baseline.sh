@@ -4,7 +4,7 @@ CUDA_VISIBLE_DEVICES=0 python -u inference.py \
     --output_path mdqa_results/baseline-vicuna_7b-10doc-answer1.jsonl \
     --model_name lmsys/vicuna-7b-v1.5 \
     --seed 42 \
-    --sample_num 100 \
+    --sample_num 25 \
     --answer_idx 1
 python -u utils/lost_in_the_middle/eval_qa_response.py --input-path mdqa_results/baseline-vicuna_7b-10doc-answer1.jsonl
 
