@@ -89,7 +89,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         self.num_heads = num_heads
 
         # Build here to make `torch.jit.trace` work.
-        self._set_cos_sin_cache_exponential(
+        self._set_cos_sin_cache_quadratic_bowl(
             seq_len=max_position_embeddings, device=self.inv_freq.device, dtype=torch.get_default_dtype()
         )
 
@@ -148,7 +148,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         seq_len,
         device,
         dtype,
-        m=25,          # lambda
+        m=0.1,          # lambda
     ):
         """
         Exponential probability:
@@ -234,7 +234,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         L = float(seq_len)
 
         # normalized centered coordinate in [-1, 1]
-        x = 2.0 * p / L - 1.0
+        x = 1 - 2.0 * p / L - 1.0
 
         # probability curve
         P = alpha * x**2                  # [seq_len]
@@ -355,7 +355,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
             self._set_cos_sin_cache_exponential(seq_len=seq_len, device=x.device, dtype=x.dtype)
             # self._set_cos_sin_cache_softmax(seq_len=seq_len, device=x.device, dtype=x.dtype)
             # self._set_cos_sin_cache_mspoe(seq_len=seq_len, device=x.device, dtype=x.dtype)
-            # self._set_cos_sin_cache_quadratic_bowl(seq_len=seq_len, device=x.device, dtype=x.dtype)
+            self._set_cos_sin_cache_quadratic_bowl(seq_len=seq_len, device=x.device, dtype=x.dtype)
             # self._set_cos_sin_cache_power_bowl(seq_len=seq_len, device=x.device, dtype=x.dtype)
 
 
