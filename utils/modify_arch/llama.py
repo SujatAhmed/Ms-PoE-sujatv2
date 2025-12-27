@@ -143,34 +143,6 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
         self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
 
-    
-    def _set_cos_sin_cache_powerlaw(self, seq_len, device, dtype, alpha=2.0):
-        print("power law caching \n")
-        min_ratio = self.min_ratio
-        max_ratio = self.max_ratio
-        num_heads = self.num_heads
-
-        self.max_seq_len_cached = seq_len
-
-        p = torch.arange(seq_len, device=device, dtype=torch.float32)
-        x = p / (seq_len - 1)
-
-        r = torch.linspace(min_ratio, max_ratio, num_heads, device=device).unsqueeze(1)
-
-        P = x ** alpha
-        U = torch.rand(num_heads, seq_len, device=device)
-        mask = (U < P).float()
-
-        t = p.unsqueeze(0).repeat(num_heads, 1)
-        t_eff = t / (1 + mask * (r - 1))
-
-        freqs = torch.einsum("ki,j->kij", t_eff, self.inv_freq)
-        emb = torch.cat([freqs, freqs], dim=-1)
-
-        self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
-        self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
-
-    
     def _set_cos_sin_cache_exponential(
         self,
         seq_len,
@@ -239,7 +211,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         seq_len,
         device,
         dtype,
-        a=0.7,   # depth of the valley
+        alpha=0.7,   # depth of the valley
     ):
         """
         Quadratic U-shaped probability:
@@ -249,6 +221,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         - range:  [1-a, 1]
         - Bernoulli sampled PER TOKEN
         """
+        print(f"from quadratic bowl sampling alpha = {alpha}")
 
         min_ratio = self.min_ratio
         max_ratio = self.max_ratio
@@ -264,7 +237,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         x = 2.0 * p / L - 1.0
 
         # probability curve
-        P = 1.0 - a * x**2                  # [seq_len]
+        P = 1.0 - alpha * x**2                  # [seq_len]
 
         # head-wise compression ratios
         r = torch.linspace(
@@ -310,6 +283,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         - range:  [0, 1]
         - Bernoulli sampled PER TOKEN
         """
+        print(f"from power_bowl sampling alpha = {alpha}")
 
         min_ratio = self.min_ratio
         max_ratio = self.max_ratio
