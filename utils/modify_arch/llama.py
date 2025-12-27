@@ -176,7 +176,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         seq_len,
         device,
         dtype,
-        m=10,          # lambda
+        m=25,          # lambda
     ):
         """
         Exponential probability:
