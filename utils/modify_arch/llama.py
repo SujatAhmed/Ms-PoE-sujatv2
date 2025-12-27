@@ -117,8 +117,6 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         compress_ratio = min_ratio + (max_ratio - min_ratio) * (compress_ratio / num_heads)
         compress_ratio = compress_ratio.unsqueeze(-1)
 
-        
-    # -------- probability definition --------  
         L = self.max_seq_len_cached  
         beta = 5.0 / L  # HARD-CODED, SCALE-AWARE  
 
@@ -143,36 +141,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
         self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
 
-    def _set_cos_sin_cache_sigmoid(self, seq_len, device, dtype, k=10.0, x0=0.5):
-        print("sigmoid caching \n")
-        min_ratio = self.min_ratio
-        max_ratio = self.max_ratio
-        num_heads = self.num_heads
-
-        self.max_seq_len_cached = seq_len
-
-        # positions
-        p = torch.arange(seq_len, device=device, dtype=torch.float32)
-        x = p / (seq_len - 1)
-
-        # head-wise compression ratios
-        r = torch.linspace(min_ratio, max_ratio, num_heads, device=device).unsqueeze(1)
-
-        # probability
-        P = torch.sigmoid(k * (x - x0))  # [seq_len]
-        U = torch.rand(num_heads, seq_len, device=device)
-
-        mask = (U < P).float()  # [head, seq_len]
-
-        t = p.unsqueeze(0).repeat(num_heads, 1)
-        t_eff = t / (1 + mask * (r - 1))
-
-        freqs = torch.einsum("ki,j->kij", t_eff, self.inv_freq)
-        emb = torch.cat([freqs, freqs], dim=-1)
-
-        self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
-        self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
-
+    
     def _set_cos_sin_cache_powerlaw(self, seq_len, device, dtype, alpha=2.0):
         print("power law caching \n")
         min_ratio = self.min_ratio
