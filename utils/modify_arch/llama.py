@@ -89,7 +89,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         self.num_heads = num_heads
 
         # Build here to make `torch.jit.trace` work.
-        self._set_cos_sin_cache_quadratic_bowl(
+        self._set_cos_sin_cache_exponential(
             seq_len=max_position_embeddings, device=self.inv_freq.device, dtype=torch.get_default_dtype()
         )
 
@@ -352,10 +352,10 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
     def forward(self, x, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len > self.max_seq_len_cached:
-            # self._set_cos_sin_cache_exponential(seq_len=seq_len, device=x.device, dtype=x.dtype)
+            self._set_cos_sin_cache_exponential(seq_len=seq_len, device=x.device, dtype=x.dtype)
             # self._set_cos_sin_cache_softmax(seq_len=seq_len, device=x.device, dtype=x.dtype)
             # self._set_cos_sin_cache_mspoe(seq_len=seq_len, device=x.device, dtype=x.dtype)
-            self._set_cos_sin_cache_quadratic_bowl(seq_len=seq_len, device=x.device, dtype=x.dtype)
+            # self._set_cos_sin_cache_quadratic_bowl(seq_len=seq_len, device=x.device, dtype=x.dtype)
             # self._set_cos_sin_cache_power_bowl(seq_len=seq_len, device=x.device, dtype=x.dtype)
 
 
