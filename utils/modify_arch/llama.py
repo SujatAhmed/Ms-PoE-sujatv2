@@ -211,7 +211,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         seq_len,
         device,
         dtype,
-        alpha=0.05,   # depth of the valley
+        alpha=1,   # depth of the valley
     ):
         """
         Quadratic U-shaped probability:
@@ -237,7 +237,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         x = 2.0 * p / L - 1.0
 
         # probability curve
-        P = 1.0 - alpha * x**2                  # [seq_len]
+        P = alpha * x**2                  # [seq_len]
 
         # head-wise compression ratios
         r = torch.linspace(
