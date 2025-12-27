@@ -101,6 +101,8 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
 
         self.max_seq_len_cached = seq_len
 
+        print("From softmax sampling")
+
         # positions [H, L]
         t = torch.arange(
             self.max_seq_len_cached,
@@ -185,6 +187,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         - Bernoulli sampled PER TOKEN POSITION
         - compression ratio fixed per head
         """
+        print(f"From exponential sampling, lambda = {m}")
 
         min_ratio = self.min_ratio
         max_ratio = self.max_ratio
