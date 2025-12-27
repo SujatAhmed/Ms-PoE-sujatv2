@@ -176,7 +176,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         seq_len,
         device,
         dtype,
-        m=0.5,          # lambda
+        m=0.1,          # lambda
     ):
         """
         Exponential probability:
@@ -201,7 +201,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
 
         # ---- probability curve (EXACT from the image) ----
         # P(p) = 1 - exp(-m * p / L)
-        P = 1.0 - torch.exp(-m * (p / L))          # [seq_len]
+        P = torch.exp(-m * (p / L))          # [seq_len]
 
         # ---- head-wise compression ratios ----
         r = torch.linspace(
