@@ -299,7 +299,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         x = torch.abs(2.0 * p / L - 1.0)
 
         # probability curve
-        P = 1.0 - x**alpha                  # [seq_len]
+        P =  x**alpha                  # [seq_len]
 
         # head-wise compression ratios
         r = torch.linspace(
