@@ -273,7 +273,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         seq_len,
         device,
         dtype,
-        alpha=4.0,   # curvature control
+        alpha=0.6,   # curvature control
     ):
         """
         Power-law U-shaped probability:
