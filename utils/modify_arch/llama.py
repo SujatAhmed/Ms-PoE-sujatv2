@@ -211,7 +211,7 @@ class MsPoELlamaRotaryEmbedding(nn.Module):
         seq_len,
         device,
         dtype,
-        alpha=0.1,   # depth of the valley
+        alpha=0.05,   # depth of the valley
     ):
         """
         Quadratic U-shaped probability:
